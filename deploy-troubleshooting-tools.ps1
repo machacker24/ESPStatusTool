@@ -1,10 +1,13 @@
 #Requires -Version 5.1
 #Requires -RunAsAdministrator
 <#PSScriptInfo
-.VERSION 2.0.0
+.VERSION 2.1.0
 .DESCRIPTION Downloads and deploys Autopilot ESP troubleshooting toolkit.
 .TAGS Intune Autopilot
 .RELEASENOTES
+  2.1.0: Adds startup persistence via scheduled task. Tool relaunches after
+         reboots during provisioning, but self-removes after reseal (Sysprep
+         clears enrollment keys) or when ESP completes.
   2.0.0: Rewritten to support new tools.ps1 (DataGridView + toolbar layout).
          Script dropdown now auto-discovers any .ps1 files in the tools folder.
          NuGet + Get-AutopilotDiagnostics still installed for dropdown availability.
@@ -145,6 +148,137 @@ Start-Process powershell.exe -ArgumentList '-NoLogo -NoProfile -NoExit -Executio
 $shiftf10Path = Join-Path $ToolsFolder 'shiftf10.ps1'
 $shiftf10Content | Out-File -FilePath $shiftf10Path -Encoding utf8 -Force
 Write-Log "Created shiftf10.ps1"
+
+# ── Save enrollment session ID for reseal detection ──────────────────────────
+# After reseal, Sysprep clears HKLM:\SOFTWARE\Microsoft\Enrollments.
+# startup.ps1 checks these GUIDs on each boot; if none remain, the device
+# was resealed and the task removes itself rather than relaunching the tool.
+$enrollBase = 'HKLM:\SOFTWARE\Microsoft\Enrollments'
+$enrollIds  = @()
+if (Test-Path $enrollBase) {
+    $enrollIds = @(Get-ChildItem $enrollBase -ErrorAction SilentlyContinue |
+                   Where-Object { $_.SubKeyCount -gt 0 } |
+                   Select-Object -ExpandProperty PSChildName)
+}
+if ($enrollIds.Count -gt 0) {
+    $enrollIds -join ',' | Out-File (Join-Path $ToolsFolder 'session.id') -Encoding utf8 -Force
+    Write-Log "Session ID saved ($($enrollIds.Count) enrollment(s))"
+} else {
+    Write-Log "No enrollment keys found — session.id not written" 'WARN'
+}
+
+# ── Create startup.ps1 (boot persistence + reseal/completion guards) ──────────
+$startupContent = @'
+#Requires -Version 5.1
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'SilentlyContinue'
+
+$ToolsFolder = 'C:\ProgramData\ServiceUI'
+$LogFile     = Join-Path $ToolsFolder 'startup.log'
+$TaskName    = 'AutopilotESPTools'
+
+function Write-Log {
+    param([string]$Message, [string]$Level = 'INFO')
+    $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')][$Level] $Message"
+    Add-Content -Path $LogFile -Value $line -ErrorAction SilentlyContinue
+}
+
+function Remove-SelfAndExit([string]$Reason) {
+    Write-Log "Removing startup task: $Reason"
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+    exit 0
+}
+
+Write-Log "startup.ps1 triggered (boot $((Get-Date).ToString('yyyy-MM-dd HH:mm:ss')))"
+
+# Guard 1: Reseal detection
+# Sysprep (reseal) clears HKLM:\SOFTWARE\Microsoft\Enrollments. If none of the
+# GUIDs saved at deploy time still exist, the device has been resealed.
+$sessionFile = Join-Path $ToolsFolder 'session.id'
+if (Test-Path $sessionFile) {
+    $storedIds  = ((Get-Content $sessionFile -Raw) -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+    $anyExists  = $false
+    foreach ($id in $storedIds) {
+        if (Test-Path "HKLM:\SOFTWARE\Microsoft\Enrollments\$id") { $anyExists = $true; break }
+    }
+    if ((-not $anyExists) -and ($storedIds.Count -gt 0)) {
+        Remove-SelfAndExit 'Reseal detected: stored enrollment GUIDs no longer present'
+    }
+}
+
+# Guard 2: Provisioning complete
+$intunePath = 'HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps'
+$appCount   = @(Get-ChildItem $intunePath -ErrorAction SilentlyContinue).Count
+if ($appCount -ge 2) {
+    Remove-SelfAndExit "Provisioning complete ($appCount Win32App entries)"
+}
+
+# Guard 3: Autopilot profile must be present (not a standard device)
+$autopilotJson = "$env:WINDIR\ServiceState\wmansvc\AutopilotDDSZTDFile.json"
+if (-not (Test-Path $autopilotJson)) {
+    Remove-SelfAndExit 'AutopilotDDSZTDFile.json absent'
+}
+
+# Wait for CloudExperienceHost (OOBE/ESP UI) to be running -- up to 3 minutes
+Write-Log "Waiting for CloudExperienceHost..."
+$waited = 0
+while ($waited -lt 180) {
+    if (Get-Process -Name 'CloudExperienceHost' -ErrorAction SilentlyContinue) { break }
+    Start-Sleep -Seconds 10
+    $waited += 10
+}
+
+if (-not (Get-Process -Name 'CloudExperienceHost' -ErrorAction SilentlyContinue)) {
+    Write-Log "CloudExperienceHost not running after ${waited}s -- not in OOBE, skipping launch" 'WARN'
+    exit 0
+}
+
+# Brief settle so ServiceUI can find the session
+Start-Sleep -Seconds 15
+
+# Launch tools via ServiceUI
+$serviceUI = Join-Path $ToolsFolder 'serviceui.exe'
+$psExe     = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+$shiftf10  = Join-Path $ToolsFolder 'shiftf10.ps1'
+
+if (-not (Test-Path $serviceUI)) { Write-Log 'serviceui.exe missing' 'ERROR'; exit 1 }
+if (-not (Test-Path $shiftf10))  { Write-Log 'shiftf10.ps1 missing'  'ERROR'; exit 1 }
+
+$psArgs = "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$shiftf10`" -WindowStyle Hidden"
+Write-Log "Launching tools via ServiceUI..."
+Start-Process $serviceUI -ArgumentList @('-process:explorer.exe', "$psExe $psArgs")
+Write-Log "Launch complete."
+'@
+
+$startupPath = Join-Path $ToolsFolder 'startup.ps1'
+$startupContent | Out-File -FilePath $startupPath -Encoding utf8 -Force
+Write-Log "Created startup.ps1"
+
+# ── Register scheduled task for boot persistence ──────────────────────────────
+try {
+    $action    = New-ScheduledTaskAction `
+                     -Execute  'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' `
+                     -Argument "-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$startupPath`""
+    $trigger   = New-ScheduledTaskTrigger -AtStartup
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $settings  = New-ScheduledTaskSettingsSet `
+                     -AllowStartIfOnBatteries `
+                     -DontStopIfGoingOnBatteries `
+                     -StartWhenAvailable `
+                     -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+
+    Register-ScheduledTask `
+        -TaskName 'AutopilotESPTools' `
+        -Action    $action `
+        -Trigger   $trigger `
+        -Principal $principal `
+        -Settings  $settings `
+        -Force | Out-Null
+
+    Write-Log "Scheduled task 'AutopilotESPTools' registered for startup persistence."
+} catch {
+    Write-Log "Failed to register scheduled task: $($_.Exception.Message)" 'WARN'
+}
 
 # ── Launch via ServiceUI ──────────────────────────────────────────────────────
 $serviceUI = Join-Path $ToolsFolder 'serviceui.exe'

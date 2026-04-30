@@ -22,7 +22,7 @@ $Script:SetupActLog = 'C:\Windows\Panther\setupact.log'
 $Script:IMELog      = 'C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\IntuneManagementExtension.log'
 
 # Scripts to exclude from the dropdown (internal/helper scripts)
-$Script:ExcludedScripts = @('tools.ps1', 'shiftf10.ps1')
+$Script:ExcludedScripts = @('tools.ps1', 'shiftf10.ps1', 'startup.ps1')
 
 $Script:AutoRefreshIntervalMs = 10000   # 10 seconds; change to taste
 $Script:RefreshBusy           = $false  # guard against overlapping timer ticks
