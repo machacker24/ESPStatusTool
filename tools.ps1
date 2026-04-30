@@ -96,7 +96,7 @@ function Get-StatusColor([string]$Status) {
 
 # ── Device / profile data functions ──────────────────────────────────────────
 function Get-AutopilotProfile {
-    $result = @{ DeviceName = $env:COMPUTERNAME; Tenant = '—'; Mode = '—' }
+    $result = @{ DeviceName = $env:COMPUTERNAME; Tenant = '-'; Mode = '-' }
 
     $jsonPath = "$env:WINDIR\ServiceState\wmansvc\AutopilotDDSZTDFile.json"
     if (-not (Test-Path $jsonPath)) { return $result }
@@ -108,7 +108,7 @@ function Get-AutopilotProfile {
 
         $result.Tenant = if ($p.CloudAssignedTenantDomain) { $p.CloudAssignedTenantDomain }
                          elseif ($p.CloudAssignedTenantId)  { $p.CloudAssignedTenantId }
-                         else                               { '—' }
+                         else                               { '-' }
 
         $result.Mode = if ($p.CloudAssignedDomainJoinMethod -eq 1) { 'Hybrid Azure AD' }
                        elseif ($p.CloudAssignedForcedEnrollment -eq 1) { 'Self-Deploying' }
@@ -483,10 +483,10 @@ function New-InfoLabel([string]$Text) {
     return $l
 }
 
-$lblDevice = New-InfoLabel 'Device: —'
-$lblTenant = New-InfoLabel 'Tenant: —'
-$lblMode   = New-InfoLabel 'Mode: —'
-$lblUser   = New-InfoLabel 'User: —'
+$lblDevice = New-InfoLabel 'Device: -'
+$lblTenant = New-InfoLabel 'Tenant: -'
+$lblMode   = New-InfoLabel 'Mode: -'
+$lblUser   = New-InfoLabel 'User: -'
 $infoRow1.Controls.Add($lblDevice, 0, 0)
 $infoRow1.Controls.Add($lblTenant, 1, 0)
 $infoRow1.Controls.Add($lblMode,   2, 0)
@@ -518,7 +518,7 @@ $blBar.Margin        = New-Object System.Windows.Forms.Padding(0, 4, 6, 0)
 $blBar.Style         = 'Continuous'
 
 $lblBLStatus         = New-Object System.Windows.Forms.Label
-$lblBLStatus.Text    = '—'
+$lblBLStatus.Text    = '-'
 $lblBLStatus.AutoSize = $true
 $lblBLStatus.TextAlign = 'MiddleLeft'
 $lblBLStatus.Height  = 22
@@ -674,7 +674,7 @@ function Invoke-Refresh {
         $ok     = ($items | Where-Object Status -eq 'Installed').Count
         $failed = ($items | Where-Object { $_.Status -in @('Failed', 'Download Failed') }).Count
         $autoTag = if ($chkAuto.Checked) { ' · auto' } else { '' }
-        $statusLabel.Text = "$total items — $ok installed, $failed failed — $(Get-Date -Format 'HH:mm:ss')$autoTag"
+        $statusLabel.Text = "$total items | $ok installed, $failed failed | $(Get-Date -Format 'HH:mm:ss')$autoTag"
     }
     finally {
         $grid.ResumeLayout()
