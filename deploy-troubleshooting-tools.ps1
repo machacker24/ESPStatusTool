@@ -49,36 +49,54 @@ $Downloads = [ordered]@{
 # ──────────────────────────────────────────────────────────────────────────────
 
 $ToolsFolder = 'C:\ProgramData\ServiceUI'
+$LogFile     = Join-Path $ToolsFolder 'deploy.log'
 
-function Write-Status([string]$Message) {
-    Write-Output "[$(Get-Date -Format 'HH:mm:ss')] $Message"
+function Write-Log {
+    param(
+        [string]$Message,
+        [ValidateSet('INFO','WARN','ERROR')][string]$Level = 'INFO'
+    )
+    $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')][$Level] $Message"
+    Write-Output $line                                      # Intune portal output
+    Add-Content -Path $LogFile -Value $line -ErrorAction SilentlyContinue  # local disk
 }
+
+# ── Ensure log folder exists before first write ───────────────────────────────
+if (-not (Test-Path $ToolsFolder)) {
+    New-Item -Path $ToolsFolder -ItemType Directory -Force | Out-Null
+}
+Write-Log "deploy-troubleshooting-tools.ps1 started (v2.0.0)"
 
 # ── Guard: skip if provisioning already finished ──────────────────────────────
 $intunePath     = 'HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps'
 $intuneAppCount = if (Test-Path $intunePath) { @(Get-ChildItem $intunePath -ErrorAction SilentlyContinue).Count } else { 0 }
 if ($intuneAppCount -ge 2) {
-    Write-Status "Provisioning appears complete ($intuneAppCount Win32App entries). Exiting."
+    Write-Log "Provisioning appears complete ($intuneAppCount Win32App entries). Exiting." 'WARN'
     exit 0
 }
 
-# ── Tools folder ──────────────────────────────────────────────────────────────
-if (-not (Test-Path $ToolsFolder)) {
-    New-Item -Path $ToolsFolder -ItemType Directory -Force | Out-Null
-    Write-Status "Created $ToolsFolder"
-} else {
-    Write-Status "$ToolsFolder already exists."
-}
+Write-Log "Tools folder: $ToolsFolder"
 
 # ── Execution policy ──────────────────────────────────────────────────────────
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope LocalMachine -Force
+Write-Log "Execution policy set to RemoteSigned"
 
 # ── NuGet + Get-AutopilotDiagnostics (makes it available in the script dropdown) ──
-Write-Status "Installing NuGet provider..."
-Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
+try {
+    Write-Log "Installing NuGet provider..."
+    Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
+    Write-Log "NuGet installed."
+} catch {
+    Write-Log "NuGet install failed: $($_.Exception.Message)" 'WARN'
+}
 
-Write-Status "Installing Get-AutopilotDiagnostics from PSGallery..."
-Install-Script -Name Get-AutopilotDiagnostics -Force
+try {
+    Write-Log "Installing Get-AutopilotDiagnostics from PSGallery..."
+    Install-Script -Name Get-AutopilotDiagnostics -Force
+    Write-Log "Get-AutopilotDiagnostics installed."
+} catch {
+    Write-Log "Get-AutopilotDiagnostics install failed: $($_.Exception.Message)" 'WARN'
+}
 
 # ── Download files ────────────────────────────────────────────────────────────
 $webArgs = @{
@@ -89,8 +107,13 @@ $webArgs = @{
 foreach ($fileName in $Downloads.Keys) {
     $dest = Join-Path $ToolsFolder $fileName
     $url  = $Downloads[$fileName]
-    Write-Status "Downloading $fileName..."
-    Invoke-WebRequest -Uri $url -OutFile $dest @webArgs
+    try {
+        Write-Log "Downloading $fileName from $url"
+        Invoke-WebRequest -Uri $url -OutFile $dest @webArgs
+        Write-Log "Saved $fileName ($([Math]::Round((Get-Item $dest).Length / 1KB, 1)) KB)"
+    } catch {
+        Write-Log "Failed to download $fileName`: $($_.Exception.Message)" 'ERROR'
+    }
 }
 
 # ── Create session-bridge script (shiftf10.ps1) ───────────────────────────────
@@ -115,16 +138,20 @@ if (Get-Process cmd -ErrorAction SilentlyContinue) {
 Start-Process powershell.exe -ArgumentList '-NoLogo -NoProfile -NoExit -ExecutionPolicy Bypass -File C:\ProgramData\ServiceUI\tools.ps1' -Wait
 '@
 
-$shiftf10Content | Out-File -FilePath (Join-Path $ToolsFolder 'shiftf10.ps1') -Encoding utf8 -Force
-Write-Status "Created shiftf10.ps1"
+$shiftf10Path = Join-Path $ToolsFolder 'shiftf10.ps1'
+$shiftf10Content | Out-File -FilePath $shiftf10Path -Encoding utf8 -Force
+Write-Log "Created shiftf10.ps1"
 
 # ── Launch via ServiceUI ──────────────────────────────────────────────────────
-$serviceUI  = Join-Path $ToolsFolder 'serviceui.exe'
-$psExe      = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
-$psArgs     = "-ExecutionPolicy Bypass -File `"$(Join-Path $ToolsFolder 'shiftf10.ps1')`" -WindowStyle Hidden"
+$serviceUI = Join-Path $ToolsFolder 'serviceui.exe'
+$psExe     = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+$psArgs    = "-ExecutionPolicy Bypass -File `"$shiftf10Path`" -WindowStyle Hidden"
 
-Write-Status "Launching tools GUI via ServiceUI..."
-Start-Process $serviceUI -ArgumentList @(
-    '-process:explorer.exe',
-    "$psExe $psArgs"
-)
+if (-not (Test-Path $serviceUI)) {
+    Write-Log "serviceui.exe not found at $serviceUI — cannot launch GUI." 'ERROR'
+    exit 1
+}
+
+Write-Log "Launching tools GUI via ServiceUI..."
+Start-Process $serviceUI -ArgumentList @('-process:explorer.exe', "$psExe $psArgs")
+Write-Log "Deploy complete."
