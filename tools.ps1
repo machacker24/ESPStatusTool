@@ -168,12 +168,12 @@ function Get-BitLockerStatus {
         $state = [int]$conv.conversionStatus
 
         $text = switch ($state) {
-            0 { 'Not Encrypted' }
+            0 { if ($prot -eq 1) { 'Pending Encryption' } else { 'Not Encrypted' } }
             1 { 'Encrypted' }
-            2 { "Encrypting  $pct%" }
-            3 { "Decrypting  $pct%" }
-            4 { "Paused (Encrypting)  $pct%" }
-            5 { "Paused (Decrypting)  $pct%" }
+            2 { "Encrypting $pct%" }
+            3 { "Decrypting $pct%" }
+            4 { "Paused (Encrypting) $pct%" }
+            5 { "Paused (Decrypting) $pct%" }
             default { 'Unknown' }
         }
 
@@ -639,10 +639,15 @@ function Update-InfoPanel {
     $lblBLStatus.Text  = $bl.Text
 
     $lblBLStatus.ForeColor = switch ($bl.State) {
-        1       { [System.Drawing.Color]::FromArgb(0, 150, 0) }   # Encrypted — green
-        { $_ -in @(2, 4) } { [System.Drawing.Color]::FromArgb(0, 100, 200) }  # Encrypting — blue
-        { $_ -in @(3, 5) } { [System.Drawing.Color]::FromArgb(180, 100, 0) }  # Decrypting — orange
-        default { [System.Drawing.Color]::FromArgb(120, 120, 120) }
+        1                  { [System.Drawing.Color]::FromArgb(0, 150, 0) }          # Encrypted
+        { $_ -in @(2, 4) } { [System.Drawing.Color]::FromArgb(0, 100, 200) }       # Encrypting
+        { $_ -in @(3, 5) } { [System.Drawing.Color]::FromArgb(180, 100, 0) }       # Decrypting
+        0                  { if ($bl.Protected) {
+                                 [System.Drawing.Color]::FromArgb(180, 100, 0)      # Pending - orange
+                             } else {
+                                 [System.Drawing.Color]::FromArgb(120, 120, 120)    # Not Encrypted - grey
+                             }}
+        default            { [System.Drawing.Color]::FromArgb(120, 120, 120) }
     }
 }
 
