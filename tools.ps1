@@ -20,8 +20,6 @@ $Script:ToolsFolder = 'C:\ProgramData\ServiceUI'
 $Script:CMTrace     = Join-Path $Script:ToolsFolder 'cmtrace.exe'
 $Script:SetupActLog = 'C:\Windows\Panther\setupact.log'
 $Script:IMELog      = 'C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\IntuneManagementExtension.log'
-# App policy entries moved to AppWorkload.log in IME ~Aug 2024
-$Script:AppWorkloadLog = 'C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\AppWorkload.log'
 
 # Scripts to exclude from the dropdown (internal/helper scripts)
 $Script:ExcludedScripts = @('tools.ps1', 'shiftf10.ps1')
@@ -210,27 +208,56 @@ function Get-BitLockerStatus {
 
 # ── IME log name resolution ───────────────────────────────────────────────────
 function Get-IMENameMap {
-    # Scans IME log files for "Get policies = [...]" entries — a JSON array of
-    # all assigned app policies with Id and Name. App entries moved to AppWorkload.log
-    # in IME ~Aug 2024; we scan both files so either version works.
-    $nameMap = @{}
+    # Scans IME log files for "Get policies = [...]" entries containing GUID->Name map.
+    # App entries moved to AppWorkload.log in IME ~Aug 2024; scans both with wildcards.
+    # Uses FileShare.ReadWrite so locked files (IME actively writing) can still be read.
+    # Handles multi-line CMTrace entries by buffering lines between <![LOG[ and ]LOG]!>.
+    $nameMap   = @{}
+    $logFolder = 'C:\ProgramData\Microsoft\IntuneManagementExtension\Logs'
+    if (-not (Test-Path $logFolder)) { return $nameMap }
 
-    # AppWorkload.log is checked first (newer IME); fall back to IntuneManagementExtension.log
-    $logPaths = @($Script:AppWorkloadLog, $Script:IMELog)
+    # AppWorkload first (newer IME), then IntuneManagementExtension (older)
+    $logFiles  = @()
+    $logFiles += Get-ChildItem "$logFolder\*AppWorkload*.log"       -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
+    $logFiles += Get-ChildItem "$logFolder\*IntuneManagement*.log"  -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
+    if (-not $logFiles) { return $nameMap }
 
-    foreach ($logPath in $logPaths) {
-        if (-not (Test-Path $logPath)) { continue }
+    foreach ($logFile in $logFiles) {
         try {
-            $reader = [System.IO.StreamReader]::new($logPath, [System.Text.Encoding]::UTF8, $true, 65536)
+            $fs     = [System.IO.FileStream]::new(
+                          $logFile.FullName,
+                          [System.IO.FileMode]::Open,
+                          [System.IO.FileAccess]::Read,
+                          [System.IO.FileShare]::ReadWrite)
+            $reader = [System.IO.StreamReader]::new($fs, [System.Text.Encoding]::UTF8, $true, 65536)
+            $buffer = $null   # accumulates multi-line CMTrace entries
             try {
                 while ($null -ne ($line = $reader.ReadLine())) {
-                    $idx = $line.IndexOf('Get policies = [')
+                    # Start of a CMTrace entry
+                    if ($line -match '^\<\!\[LOG\[') {
+                        $buffer = $line
+                        # Single-line entry ends with ]LOG]!> on the same line
+                        if ($line -match '\]LOG\]\!>') {
+                            # Extract message: between <![LOG[ and ]LOG]
+                            $msg = ($line -replace '^\<\!\[LOG\[', '') -replace '\]LOG\]\!>.*$', ''
+                        } else {
+                            continue   # wait for the closing line
+                        }
+                    } elseif ($null -ne $buffer) {
+                        # Continuation of a multi-line entry
+                        $buffer += "`n" + $line
+                        if ($line -notmatch '\]LOG\]\!>') { continue }
+                        # End of multi-line: extract full message
+                        $msg = ($buffer -replace '^\<\!\[LOG\[', '') -replace '\]LOG\]\!>.*$', ''
+                        $buffer = $null
+                    } else {
+                        continue
+                    }
+
+                    $idx = $msg.IndexOf('Get policies = [')
                     if ($idx -lt 0) { continue }
 
-                    # Slice from '[' and strip CMTrace suffix (]]LOG]!><time=...>)
-                    $jsonPart = $line.Substring($idx + 'Get policies = '.Length)
-                    $jsonPart = $jsonPart -replace '\]\]LOG\].*$', ']'
-
+                    $jsonPart = $msg.Substring($idx + 'Get policies = '.Length)
                     try {
                         $policies = $jsonPart | ConvertFrom-Json -ErrorAction Stop
                     } catch { continue }
@@ -243,6 +270,7 @@ function Get-IMENameMap {
                 }
             } finally {
                 $reader.Dispose()
+                $fs.Dispose()
             }
         } catch { }
     }
@@ -742,11 +770,12 @@ function Invoke-Refresh {
             }
         }
 
-        $total  = $items.Count
-        $ok     = ($items | Where-Object Status -eq 'Installed').Count
-        $failed = ($items | Where-Object { $_.Status -in @('Failed', 'Download Failed') }).Count
+        $total   = $items.Count
+        $ok      = ($items | Where-Object Status -eq 'Installed').Count
+        $failed  = ($items | Where-Object { $_.Status -in @('Failed', 'Download Failed') }).Count
+        $named   = ($items | Where-Object { $_.Name -ne $_.GUID }).Count
         $autoTag = if ($chkAuto.Checked) { ' (auto)' } else { '' }
-        $statusLabel.Text = "$total items | $ok installed, $failed failed | $(Get-Date -Format 'HH:mm:ss')$autoTag"
+        $statusLabel.Text = "$total items | $ok installed, $failed failed | $named/$total named | $(Get-Date -Format 'HH:mm:ss')$autoTag"
     }
     finally {
         $grid.ResumeLayout()
