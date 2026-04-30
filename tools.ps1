@@ -104,7 +104,17 @@ function Get-AutopilotProfile {
     try {
         $p = Get-Content $jsonPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
 
-        if ($p.CloudAssignedDeviceName) { $result.DeviceName = $p.CloudAssignedDeviceName }
+        if ($p.CloudAssignedDeviceName) {
+            $deviceName = $p.CloudAssignedDeviceName
+            # Resolve %SERIAL% template token if present
+            if ($deviceName -like '*%SERIAL%*') {
+                try {
+                    $serial = (Get-WmiObject -Class Win32_BIOS -ErrorAction Stop).SerialNumber.Trim()
+                    $deviceName = $deviceName -replace '%SERIAL%', $serial
+                } catch { }
+            }
+            $result.DeviceName = $deviceName
+        }
 
         $result.Tenant = if ($p.CloudAssignedTenantDomain) { $p.CloudAssignedTenantDomain }
                          elseif ($p.CloudAssignedTenantId)  { $p.CloudAssignedTenantId }
