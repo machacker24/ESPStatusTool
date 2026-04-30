@@ -40,12 +40,11 @@ $Downloads = [ordered]@{
     # ── Main UI ────────────────────────────────────────────────────────────────
     'tools.ps1'     = 'https://raw.githubusercontent.com/YOUR-ORG/YOUR-REPO/main/ESPStatusTool/tools.ps1'
 
-    # ── Optional diagnostic scripts (uncomment and set URLs to enable) ─────────
-    # Each will appear as a selectable entry in the Script dropdown.
-    #
-    # 'Get-AutopilotDiagnosticsCommunity.ps1'         = 'https://raw.githubusercontent.com/YOUR-ORG/YOUR-REPO/main/scripts/Get-AutopilotDiagnosticsCommunity.ps1'
-    # 'Get-IntuneManagementExtensionDiagnostics.ps1'  = 'https://raw.githubusercontent.com/YOUR-ORG/YOUR-REPO/main/scripts/Get-IntuneManagementExtensionDiagnostics.ps1'
-    # 'My-CustomTool.ps1'                             = 'https://mystorageaccount.blob.core.windows.net/scripts/My-CustomTool.ps1'
+    # ── Optional diagnostic scripts (each appears in the Script dropdown) ────────
+    'Get-AutopilotDiagnosticsCommunity.ps1'        = 'https://raw.githubusercontent.com/machacker24/ESPStatusTool/main/Get-AutopilotDiagnosticsCommunity.ps1'
+    'Get-IntuneManagementExtensionDiagnostics.ps1' = 'https://raw.githubusercontent.com/machacker24/ESPStatusTool/main/Get-IntuneManagementExtensionDiagnostics.ps1'
+    # Add further custom tools here — one line per file:
+    # 'My-CustomTool.ps1' = 'https://...'
 }
 # ──────────────────────────────────────────────────────────────────────────────
 
