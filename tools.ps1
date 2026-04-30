@@ -229,14 +229,16 @@ function Get-TrackedItems {
             $provVals = Get-ItemProperty $provPath -ErrorAction SilentlyContinue
             if (-not $provVals) { continue }
 
-            # ProvisioningProgress stores each app as a named JSON value
+            # ProvisioningProgress stores each app as a GUID-named JSON value
             foreach ($prop in $provVals.PSObject.Properties) {
-                if ($prop.Name -like 'PS*') { continue }  # skip PS built-in properties
+                if ($prop.Name -like 'PS*') { continue }
+                # Skip anything that isn't a GUID (timestamps, plain property names, etc.)
+                if ($prop.Name -notmatch '^[{(]?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}[})]?$') { continue }
                 try {
                     $entry = $prop.Value | ConvertFrom-Json -ErrorAction Stop
                 } catch { continue }
 
-                $guid   = $prop.Name
+                $guid   = $prop.Name.Trim('{}()')
                 if (-not $seen.Add($guid)) { continue }
 
                 $status = Resolve-State $Script:WorkloadStates $entry.WorkloadState
@@ -428,10 +430,10 @@ $scriptDropdown.Width        = 240
 $scriptDropdown.Height       = 30
 $scriptDropdown.Margin       = New-Object System.Windows.Forms.Padding(0, 0, 4, 0)
 
-$btnRun         = New-ToolButton '▶ Run Script'
+$btnRun         = New-ToolButton '> Run Script'
 
 $sep2           = New-Separator
-$btnRefresh     = New-ToolButton '↻ Refresh'
+$btnRefresh     = New-ToolButton 'Refresh'
 
 $sep3           = New-Separator
 
@@ -465,7 +467,7 @@ $infoRow1.Dock        = 'Top'
 $infoRow1.Height      = 30
 $infoRow1.ColumnCount = 4
 $infoRow1.RowCount    = 1
-$infoRow1.GrowStyle   = 'None'
+$infoRow1.GrowStyle   = [System.Windows.Forms.TableLayoutPanelGrowStyle]::FixedSize
 $infoRow1.BackColor   = [System.Drawing.Color]::Transparent
 $infoRow1.Padding     = New-Object System.Windows.Forms.Padding(0, 4, 0, 0)
 @(25, 30, 22, 23) | ForEach-Object {
@@ -673,7 +675,7 @@ function Invoke-Refresh {
         $total  = $items.Count
         $ok     = ($items | Where-Object Status -eq 'Installed').Count
         $failed = ($items | Where-Object { $_.Status -in @('Failed', 'Download Failed') }).Count
-        $autoTag = if ($chkAuto.Checked) { ' · auto' } else { '' }
+        $autoTag = if ($chkAuto.Checked) { ' (auto)' } else { '' }
         $statusLabel.Text = "$total items | $ok installed, $failed failed | $(Get-Date -Format 'HH:mm:ss')$autoTag"
     }
     finally {
