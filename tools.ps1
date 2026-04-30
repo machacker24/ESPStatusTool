@@ -221,19 +221,23 @@ function Get-IMENameMap {
         $reader = [System.IO.StreamReader]::new($logPath, [System.Text.Encoding]::UTF8, $true, 65536)
         try {
             while ($null -ne ($line = $reader.ReadLine())) {
-                # Pattern used by Get-IntuneManagementExtensionDiagnostics
-                if ($line -notmatch 'Get policies = \[(.+)\]') { continue }
+                $idx = $line.IndexOf('Get policies = [')
+                if ($idx -lt 0) { continue }
+
+                # Slice from the '[' and strip the CMTrace suffix (]]LOG]!><time=...>)
+                $jsonPart = $line.Substring($idx + 'Get policies = '.Length)
+                $jsonPart = $jsonPart -replace '\]\]LOG\].*$', ']'
 
                 try {
-                    $policies = "[{0}]" -f $Matches[1] | ConvertFrom-Json -ErrorAction Stop
-                } catch { break }
+                    $policies = $jsonPart | ConvertFrom-Json -ErrorAction Stop
+                } catch { continue }
 
                 foreach ($policy in $policies) {
                     if ($policy.Id -and $policy.Name -and -not $nameMap.ContainsKey($policy.Id)) {
                         $nameMap[$policy.Id] = $policy.Name
                     }
                 }
-                break  # only need the first match
+                # No break — accumulate names from all matching entries in the log
             }
         } finally {
             $reader.Dispose()
