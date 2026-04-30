@@ -38,7 +38,7 @@ $Downloads = [ordered]@{
     'cmtrace.exe'   = 'https://github.com/andrew-s-taylor/public/raw/main/Troubleshooting/CMTrace.exe'
 
     # ── Main UI ────────────────────────────────────────────────────────────────
-    'tools.ps1'     = 'https://raw.githubusercontent.com/YOUR-ORG/YOUR-REPO/main/ESPStatusTool/tools.ps1'
+    'tools.ps1'     = 'https://raw.githubusercontent.com/machacker24/ESPStatusTool/main/tools.ps1'
 
     # ── Optional diagnostic scripts (each appears in the Script dropdown) ────────
     'Get-AutopilotDiagnosticsCommunity.ps1'        = 'https://raw.githubusercontent.com/machacker24/ESPStatusTool/main/Get-AutopilotDiagnosticsCommunity.ps1'
@@ -78,8 +78,12 @@ if ($intuneAppCount -ge 2) {
 Write-Log "Tools folder: $ToolsFolder"
 
 # ── Execution policy ──────────────────────────────────────────────────────────
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope LocalMachine -Force
-Write-Log "Execution policy set to RemoteSigned"
+try {
+    Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope LocalMachine -Force
+    Write-Log "Execution policy set to RemoteSigned"
+} catch {
+    Write-Log "Set-ExecutionPolicy failed (may be GPO-controlled): $($_.Exception.Message)" 'WARN'
+}
 
 # ── NuGet + Get-AutopilotDiagnostics (makes it available in the script dropdown) ──
 try {
@@ -149,6 +153,12 @@ $psArgs    = "-ExecutionPolicy Bypass -File `"$shiftf10Path`" -WindowStyle Hidde
 
 if (-not (Test-Path $serviceUI)) {
     Write-Log "serviceui.exe not found at $serviceUI — cannot launch GUI." 'ERROR'
+    exit 1
+}
+
+$toolsPs1 = Join-Path $ToolsFolder 'tools.ps1'
+if (-not (Test-Path $toolsPs1)) {
+    Write-Log "tools.ps1 not found at $toolsPs1 — GUI cannot start." 'ERROR'
     exit 1
 }
 
