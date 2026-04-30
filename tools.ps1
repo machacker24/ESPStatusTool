@@ -28,6 +28,15 @@ $Script:AutoRefreshIntervalMs = 10000   # 10 seconds; change to taste
 $Script:RefreshBusy           = $false  # guard against overlapping timer ticks
 
 # ── State maps (sourced from Get-AutopilotDiagnostics logic) ─────────────────
+# Win32 ComplianceStateMessage.ComplianceState (sub-key structure, newer IME)
+$Script:ComplianceStates = @{
+    0 = 'Unknown'
+    1 = 'Installed'
+    2 = 'Not Installed'
+    3 = 'Conflict'
+    4 = 'Failed'
+}
+
 # Win32 / Sidecar ProvisioningProgress WorkloadState
 $Script:WorkloadStates = @{
     0 = 'Not Started'
@@ -241,35 +250,59 @@ function Get-TrackedItems {
     $items = [System.Collections.Generic.List[PSCustomObject]]::new()
     $seen  = [System.Collections.Generic.HashSet[string]]::new()
 
-    # ── Win32 / Sidecar apps via ProvisioningProgress JSON ────────────────────
-    # This is the authoritative source: contains FriendlyName + WorkloadState
-    # without requiring Graph. Mirrors what Get-AutopilotDiagnostics reads.
+    # ── Win32 apps (IntuneManagementExtension\Win32Apps) ─────────────────────
+    # Two possible structures depending on IME version / provisioning phase:
+    #   A) ProvisioningProgress sub-key — GUID-named JSON values with FriendlyName+WorkloadState
+    #   B) {guid}_{revision} sub-keys — each has ComplianceStateMessage\ComplianceStateMessage JSON
+    # We read A first (richer data); B fills in anything A didn't cover.
     $imePath = 'HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps'
     if (Test-Path $imePath) {
         foreach ($userKey in Get-ChildItem $imePath -ErrorAction SilentlyContinue) {
+
+            # ── Structure A: ProvisioningProgress ────────────────────────────
             $provPath = Join-Path $userKey.PSPath 'ProvisioningProgress'
-            if (-not (Test-Path $provPath)) { continue }
+            if (Test-Path $provPath) {
+                $provVals = Get-ItemProperty $provPath -ErrorAction SilentlyContinue
+                if ($provVals) {
+                    foreach ($prop in $provVals.PSObject.Properties) {
+                        if ($prop.Name -like 'PS*') { continue }
+                        if ($prop.Name -notmatch '^[{(]?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}[})]?$') { continue }
+                        try { $entry = $prop.Value | ConvertFrom-Json -ErrorAction Stop } catch { continue }
 
-            $provVals = Get-ItemProperty $provPath -ErrorAction SilentlyContinue
-            if (-not $provVals) { continue }
+                        $guid = $prop.Name.Trim('{}()')
+                        if (-not $seen.Add($guid)) { continue }
 
-            # ProvisioningProgress stores each app as a GUID-named JSON value
-            foreach ($prop in $provVals.PSObject.Properties) {
-                if ($prop.Name -like 'PS*') { continue }
-                # Skip anything that isn't a GUID (timestamps, plain property names, etc.)
-                if ($prop.Name -notmatch '^[{(]?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}[})]?$') { continue }
-                try {
-                    $entry = $prop.Value | ConvertFrom-Json -ErrorAction Stop
-                } catch { continue }
+                        $items.Add([PSCustomObject]@{
+                            Name   = if ($entry.FriendlyName) { $entry.FriendlyName } else { $guid }
+                            GUID   = $guid
+                            Status = Resolve-State $Script:WorkloadStates $entry.WorkloadState
+                            Source = 'Win32App'
+                        })
+                    }
+                }
+            }
 
-                $guid   = $prop.Name.Trim('{}()')
+            # ── Structure B: {guid}_{revision} sub-keys ───────────────────────
+            foreach ($appKey in Get-ChildItem $userKey.PSPath -ErrorAction SilentlyContinue) {
+                # Key name format: "{guid}_{revision}" — strip the version suffix
+                $guid = $appKey.PSChildName -replace '_\d+$', ''
+                if ($guid -notmatch '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') { continue }
                 if (-not $seen.Add($guid)) { continue }
 
-                $status = Resolve-State $Script:WorkloadStates $entry.WorkloadState
-                $name   = if ($entry.FriendlyName) { $entry.FriendlyName } else { $guid }
+                # ComplianceStateMessage is a sub-key; its value has the same name
+                $csmKeyPath = Join-Path $appKey.PSPath 'ComplianceStateMessage'
+                $csmJson    = (Get-ItemProperty $csmKeyPath -ErrorAction SilentlyContinue).ComplianceStateMessage
+
+                $status = 'Unknown'
+                if ($csmJson) {
+                    try {
+                        $csm    = $csmJson | ConvertFrom-Json -ErrorAction Stop
+                        $status = Resolve-State $Script:ComplianceStates $csm.ComplianceState
+                    } catch { }
+                }
 
                 $items.Add([PSCustomObject]@{
-                    Name   = $name
+                    Name   = $guid   # enriched by IME log pass below
                     GUID   = $guid
                     Status = $status
                     Source = 'Win32App'
