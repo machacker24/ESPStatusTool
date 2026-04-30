@@ -20,6 +20,8 @@ $Script:ToolsFolder = 'C:\ProgramData\ServiceUI'
 $Script:CMTrace     = Join-Path $Script:ToolsFolder 'cmtrace.exe'
 $Script:SetupActLog = 'C:\Windows\Panther\setupact.log'
 $Script:IMELog      = 'C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\IntuneManagementExtension.log'
+# App policy entries moved to AppWorkload.log in IME ~Aug 2024
+$Script:AppWorkloadLog = 'C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\AppWorkload.log'
 
 # Scripts to exclude from the dropdown (internal/helper scripts)
 $Script:ExcludedScripts = @('tools.ps1', 'shiftf10.ps1')
@@ -208,42 +210,41 @@ function Get-BitLockerStatus {
 
 # ── IME log name resolution ───────────────────────────────────────────────────
 function Get-IMENameMap {
-    # Reads IntuneManagementExtension.log line-by-line (streaming, no full load)
-    # and extracts the first "Get policies = [...]" entry, which is a JSON array
-    # of all assigned app policies including Id and Name. Returns a hashtable of
-    # GUID -> display name, or an empty hashtable if the log is absent/unreadable.
+    # Scans IME log files for "Get policies = [...]" entries — a JSON array of
+    # all assigned app policies with Id and Name. App entries moved to AppWorkload.log
+    # in IME ~Aug 2024; we scan both files so either version works.
     $nameMap = @{}
 
-    $logPath = $Script:IMELog
-    if (-not (Test-Path $logPath)) { return $nameMap }
+    # AppWorkload.log is checked first (newer IME); fall back to IntuneManagementExtension.log
+    $logPaths = @($Script:AppWorkloadLog, $Script:IMELog)
 
-    try {
-        $reader = [System.IO.StreamReader]::new($logPath, [System.Text.Encoding]::UTF8, $true, 65536)
+    foreach ($logPath in $logPaths) {
+        if (-not (Test-Path $logPath)) { continue }
         try {
-            while ($null -ne ($line = $reader.ReadLine())) {
-                $idx = $line.IndexOf('Get policies = [')
-                if ($idx -lt 0) { continue }
+            $reader = [System.IO.StreamReader]::new($logPath, [System.Text.Encoding]::UTF8, $true, 65536)
+            try {
+                while ($null -ne ($line = $reader.ReadLine())) {
+                    $idx = $line.IndexOf('Get policies = [')
+                    if ($idx -lt 0) { continue }
 
-                # Slice from the '[' and strip the CMTrace suffix (]]LOG]!><time=...>)
-                $jsonPart = $line.Substring($idx + 'Get policies = '.Length)
-                $jsonPart = $jsonPart -replace '\]\]LOG\].*$', ']'
+                    # Slice from '[' and strip CMTrace suffix (]]LOG]!><time=...>)
+                    $jsonPart = $line.Substring($idx + 'Get policies = '.Length)
+                    $jsonPart = $jsonPart -replace '\]\]LOG\].*$', ']'
 
-                try {
-                    $policies = $jsonPart | ConvertFrom-Json -ErrorAction Stop
-                } catch { continue }
+                    try {
+                        $policies = $jsonPart | ConvertFrom-Json -ErrorAction Stop
+                    } catch { continue }
 
-                foreach ($policy in $policies) {
-                    if ($policy.Id -and $policy.Name -and -not $nameMap.ContainsKey($policy.Id)) {
-                        $nameMap[$policy.Id] = $policy.Name
+                    foreach ($policy in $policies) {
+                        if ($policy.Id -and $policy.Name -and -not $nameMap.ContainsKey($policy.Id)) {
+                            $nameMap[$policy.Id] = $policy.Name
+                        }
                     }
                 }
-                # No break — accumulate names from all matching entries in the log
+            } finally {
+                $reader.Dispose()
             }
-        } finally {
-            $reader.Dispose()
-        }
-    } catch {
-        # Log unreadable (e.g. locked) — silently return what we have
+        } catch { }
     }
 
     return $nameMap
