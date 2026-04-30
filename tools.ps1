@@ -314,8 +314,9 @@ function Get-TrackedItems {
         if (-not (Test-Path $sectionPath)) { continue }
 
         foreach ($appKey in Get-ChildItem $sectionPath -ErrorAction SilentlyContinue) {
-            $guid = $appKey.PSChildName
-            if (-not $seen.Add("esp_$guid")) { continue }  # already covered by richer source above
+            $guid = $appKey.PSChildName.Trim('{}()')
+            if ($guid -notmatch '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') { continue }
+            if (-not $seen.Add("esp_$guid")) { continue }
 
             $vals   = Get-ItemProperty $appKey.PSPath -ErrorAction SilentlyContinue
             $status = Resolve-State $Script:ESPStates $vals.InstallationState
