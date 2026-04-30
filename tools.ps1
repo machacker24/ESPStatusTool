@@ -109,6 +109,7 @@ function Get-StatusColor([string]$Status) {
         'Not Installed'    { return [System.Drawing.Color]::FromArgb(120, 120, 120) }
         'Not Started'      { return [System.Drawing.Color]::FromArgb(120, 120, 120) }
         'Skipped'          { return [System.Drawing.Color]::FromArgb(120, 120, 120) }
+        'Not Applicable'   { return [System.Drawing.Color]::FromArgb(160, 140, 180) }
         default            { return [System.Drawing.Color]::Black }
     }
 }
@@ -329,8 +330,13 @@ function Get-TrackedItems {
                 $status = 'Unknown'
                 if ($csmJson) {
                     try {
-                        $csm    = $csmJson | ConvertFrom-Json -ErrorAction Stop
-                        $status = Resolve-State $Script:ComplianceStates $csm.ComplianceState
+                        $csm = $csmJson | ConvertFrom-Json -ErrorAction Stop
+                        # Applicability 1 = requirements not met — distinct from genuinely not installed
+                        $status = if ($csm.Applicability -eq 1) {
+                            'Not Applicable'
+                        } else {
+                            Resolve-State $Script:ComplianceStates $csm.ComplianceState
+                        }
                     } catch { }
                 }
 
@@ -773,9 +779,11 @@ function Invoke-Refresh {
         $total   = $items.Count
         $ok      = ($items | Where-Object Status -eq 'Installed').Count
         $failed  = ($items | Where-Object { $_.Status -in @('Failed', 'Download Failed') }).Count
+        $na      = ($items | Where-Object Status -eq 'Not Applicable').Count
         $named   = ($items | Where-Object { $_.Name -ne $_.GUID }).Count
+        $naTag   = if ($na -gt 0) { ", $na n/a" } else { '' }
         $autoTag = if ($chkAuto.Checked) { ' (auto)' } else { '' }
-        $statusLabel.Text = "$total items | $ok installed, $failed failed | $named/$total named | $(Get-Date -Format 'HH:mm:ss')$autoTag"
+        $statusLabel.Text = "$total items | $ok installed, $failed failed$naTag | $named/$total named | $(Get-Date -Format 'HH:mm:ss')$autoTag"
     }
     finally {
         $grid.ResumeLayout()
