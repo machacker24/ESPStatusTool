@@ -48,12 +48,22 @@ $Script:ESPStates = @{
     4 = 'Failed'
 }
 
-# MSI app state (EnterpriseDesktopAppManagement)
+# MSI app state (EnterpriseDesktopAppManagement) — uses same extended codes as OfficeCSP
 $Script:MSIStates = @{
-    1 = 'Not Installed'
-    2 = 'Downloading'
-    3 = 'Installed'
-    4 = 'Failed'
+    0  = 'None'
+    1  = 'Not Installed'
+    2  = 'Downloading'
+    3  = 'Installing'
+    10 = 'Initialized'
+    20 = 'Downloading'
+    25 = 'Pending Retry'
+    30 = 'Download Failed'
+    40 = 'Download Complete'
+    48 = 'Pending User Session'
+    50 = 'Installing'
+    55 = 'Pending Retry'
+    60 = 'Failed'
+    70 = 'Installed'
 }
 
 # Office CSP state
@@ -134,7 +144,11 @@ function Get-AssignedUser {
     if (Test-Path $enrollBase) {
         foreach ($key in Get-ChildItem $enrollBase -ErrorAction SilentlyContinue) {
             $upn = (Get-ItemProperty $key.PSPath -ErrorAction SilentlyContinue).UPN
-            if ($upn) { return $upn }
+            if ($upn) {
+                # Strip AAD object-ID suffix: "user@domain@{guid}" -> "user@domain"
+                if ($upn -match '^(.+@[^@]+)@[0-9a-fA-F\-]{36}') { $upn = $Matches[1] }
+                return $upn
+            }
         }
     }
 
@@ -273,19 +287,21 @@ function Get-TrackedItems {
 
             foreach ($appKey in Get-ChildItem $msiPath -ErrorAction SilentlyContinue) {
                 $productCode = $appKey.PSChildName
-                if (-not $seen.Add($productCode)) { continue }
+                # Normalize: strip braces so "{guid}" deduplicates against "guid" from ProvisioningProgress
+                $guid = $productCode.Trim('{}')
+                if (-not $seen.Add($guid)) { continue }
 
                 $vals   = Get-ItemProperty $appKey.PSPath -ErrorAction SilentlyContinue
                 $status = Resolve-State $Script:MSIStates $vals.Status
 
-                # Try to resolve display name from Uninstall registry
+                # Try to resolve display name from Uninstall registry (try both braced and bare)
                 $uninstallPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$productCode"
                 $displayName   = (Get-ItemProperty $uninstallPath -ErrorAction SilentlyContinue).DisplayName
-                $name          = if ($displayName) { $displayName } else { $productCode }
+                $name          = if ($displayName) { $displayName } else { $guid }
 
                 $items.Add([PSCustomObject]@{
                     Name   = $name
-                    GUID   = $productCode
+                    GUID   = $guid
                     Status = $status
                     Source = 'MSI'
                 })
